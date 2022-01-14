@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import datetime
 import logging.handlers
 import requests
+import json
 
 from autopkglib import Processor, ProcessorError
 
@@ -29,6 +30,8 @@ class Package:
     # the application part of the package name matching the test policy
     package = ""
     patch = ""  # name of the patch definition
+    referencePolicy = "" #name of the self defined policy in ptch recipe
+    distributionMethod = "" # prompt (automatic) or self service
     name = ""  # full name of the package '<package>-<version>.pkg'
     version = ""  # the version of our package
     idn = ""  # id of the package in our JP server
@@ -41,10 +44,7 @@ class PatchManager(Processor):
     description = __doc__
 
     input_variables = {
-        "package": {
-            "required": True,
-            "description": "App part of package name"
-        },
+        "package": {"required": True, "description": "Application part of package name"},
         "patch": {"required": False, "description": "Patch name"},
     }
     output_variables = {
@@ -104,21 +104,35 @@ class PatchManager(Processor):
         # get two DIFFERENT cookies for this.
 
         # the front page will give us the cookies
-        r = requests.get(server)
 
-        cookie_value = r.cookies.get('APBALANCEID')
-        if cookie_value:
-            # we are NOT premium Jamf Cloud
-            self.cookies = dict(APBALANCEID=cookie_value)
-        else:
-            cookie_value = r.cookies['AWSALB']
-            self.cookies = dict(AWSALB=cookie_value)
-        policy_name = "TEST-{}".format(self.pkg.package)
+        #*********** James herrin removed for testing between here TESTING
+
+        # r = requests.get(server)
+
+        # cookie_value = r.cookies.get('APBALANCEID')
+        # if cookie_value:
+        #     # we are NOT premium Jamf Cloud
+        #     self.cookies = dict(APBALANCEID=cookie_value)
+        #     c_cookie = "APBALANCEID=%s", cookie_value
+        # else:
+        #     cookie_value = r.cookies['AWSALB']
+        #     self.cookies = dict(AWSALB=cookie_value)
+        #     c_cookie = "AWSALB=%s", cookie_value
+
+        #******* and here!!
+        #-------------- Jacob Additional Code ---------------#
+        # policy_name = self.pkg.referencePolicy + self.pkg.package
+        # policy_name = "Install Latest {}".format(self.pkg.package)
+        policy_name = self.pkg.referencePolicy
+        #--------------- End of Jacob Addiontal Code----------#
         url = self.base + "policies/name/{}".format(policy_name)
         self.logger.debug(
             "About to make request URL %s, auth %s" % (url, self.auth)
         )
-        ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        ###### TESTING Begin
+        ret = requests.get(url, auth=self.auth)
+        #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        ###### Testing end
         if ret.status_code != 200:
             self.logger.debug(
                 "TEST Policy %s not found error: %s"
@@ -135,25 +149,27 @@ class PatchManager(Processor):
                 "package_configuration/packages/package/id"
             ).text
         except AttributeError:
-            self.logger.debug(
-                f"Missing package definition in policy: {policy_name}")
-            raise ProcessorError("Missing package definition")
+            self.logger.debug(f"Missing package definition in policy: {policy_name}")
+            raise ProcessorError(f"Missing package definition")
         self.pkg.name = root.find(
             "package_configuration/packages/package/name"
         ).text
         self.logger.debug(
-            "Version in TEST Policy %s " %
-            self.pkg.name.split("-", 1)[1][:-4]
+            "Version in TEST Policy %s " % self.pkg.name.rsplit("-", 1)[1][:-4]
         )
         # return the version number
-        return self.pkg.name.split("-", 1)[1][:-4]
+        return self.pkg.name.rsplit("-", 1)[1][:-4]
 
     def patch(self):
         """Now we check for, then update the patch definition"""
+        self.logger.debug("Starting Patch Function")
         # download the list of titles
         url = self.base + "patchsoftwaretitles"
         self.logger.debug("About to request PST list %s", url)
-        ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        ###### TESTING Begin
+        ret = requests.get(url, auth=self.auth)
+        #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        ###### TESTING end
         if ret.status_code != 200:
             raise ProcessorError(
                 "Patch list download failed: {} : {}".format(
@@ -171,12 +187,16 @@ class PatchManager(Processor):
                 break
         if ident == 0:
             raise ProcessorError(
-                f"Patch list did not contain title: {self.pkg.patch}"
+                "Patch list did not contain title: {}".format(self.pkg.patch)
             )
         # get the patch list for our title
         url = self.base + "patchsoftwaretitles/id/" + str(ident)
         self.logger.debug("About to request PST by ID: %s" % url)
-        ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+
+        ###### TESTING Begin
+        ret = requests.get(url, auth=self.auth)
+        #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        ###### TESTING end
         if ret.status_code != 200:
             raise ProcessorError(
                 "Patch software download failed: {} : {}".format(
@@ -189,7 +209,7 @@ class PatchManager(Processor):
         done = False
         for record in root.findall("versions/version"):
             if self.pkg.version in record.findtext("software_version"):
-                software_version = record.findtext("software_version")
+                patch_def_software_version = record.findtext("software_version")
                 self.logger.debug("Found our version")
                 if record.findtext("package/name"):
                     self.logger.debug("Definition already points to package")
@@ -213,8 +233,10 @@ class PatchManager(Processor):
         # update the patch def
         data = ET.tostring(root)
         self.logger.debug("About to put PST: %s" % url)
-        ret = requests.put(url, auth=self.auth,
-                data=data, cookies=self.cookies)
+        ###### TESTING Begin
+        ret = requests.put(url, auth=self.auth, data=data)
+        #ret = requests.put(url, auth=self.auth, data=data, cookies=self.cookies)
+        ###### TESTING end
         if ret.status_code != 201:
             raise ProcessorError(
                 "Patch definition update failed with code: %s"
@@ -223,9 +245,12 @@ class PatchManager(Processor):
         self.logger.debug("patch def updated")
         # now the patch policy - this will be a journey as well
         # first get the list of patch policies for our software title
-        url = f"{self.base}patchpolicies/softwaretitleconfig/id/{str(ident)}"
+        url = self.base + "patchpolicies/softwaretitleconfig/id/" + str(ident)
         self.logger.debug("About to request patch list: %s" % url)
-        ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        ###### TESTING Begin
+        ret = requests.get(url, auth=self.auth)
+        #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        ###### TESTING end
         if ret.status_code != 200:
             raise ProcessorError(
                 "Patch policy list download failed: {} : {}".format(
@@ -245,7 +270,11 @@ class PatchManager(Processor):
                 pol_id = pol.findtext("id")
                 url = self.base + "patchpolicies/id/" + str(pol_id)
                 self.logger.debug("About to request PP by ID: %s" % url)
-                ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+                
+                ###### TESTING Begin
+                ret = requests.get(url, auth=self.auth)
+                #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+                ###### TESTING end
                 if ret.status_code != 200:
                     raise ProcessorError(
                         "Patch policy download failed: {} : {}".format(
@@ -261,29 +290,48 @@ class PatchManager(Processor):
                         self.pkg.version,
                     )
                 )
-                if root.findtext("general/target_version") == 
-                        self.pkg.version:
+                if root.findtext("general/target_version") == self.pkg.version:
                     # we have already done this version
                     self.logger.debug(
                         "Version %s already done" % self.pkg.version
                     )
                     return 0
-                root.find("general/target_version").text = software_version
+                root.find("general/target_version").text = patch_def_software_version
                 root.find("general/release_date").text = ""
                 root.find("general/enabled").text = "true"
+                root.find("general/distribution_method").text = self.pkg.distributionMethod
                 # create a description with date
-                now = datetime.datetime.now().strftime(" (%Y-%m-%d)")
-                desc = "Update " + self.pkg.package + now
-                root.find(
-                    "user_interaction/self_service_description"
-                ).text = desc
+                #----------------------- Jacob Edit Code ---------------------------
+                filePath = "/usr/local/var/log/testTimeDB.json"
+                now = datetime.datetime.now().strftime("(%Y-%m-%d)")
+                with open(filePath, 'r', encoding='utf-8') as infile:
+                    timeLog = json.load(infile)
+                if self.pkg.package in timeLog:
+                    self.logger.debug(f"Found {self.pkg.package} in time logs.")
+                else:
+                    self.logger.debug(f"Could not find {self.pkg.package} in time logs. Creating new time log named:{self.pkg.package}")
+                timeLog[self.pkg.package] = now
+                with open(filePath,'w', encoding='utf-8') as outfile:
+                    json.dump(timeLog, outfile, skipkeys=True, ensure_ascii=False, indent=4)
+                # if self.pkg.distributionMethod == "selfservice":
+                #     now = datetime.datetime.now().strftime(" (%Y-%m-%d)")
+                #     self.logger.debug("found now %s " % now)
+                #     desc = "Update " + self.pkg.package + now
+                #     self.logger.debug("built desc %s " % desc)
+                #     root.find(
+                #         "user_interaction/self_service_description"
+                #     ).text = desc
+                #     self.logger.debug("user_interaction/self_service_description")
+                #----------------------- Jacob Edit End ----------------------------
                 data = ET.tostring(root)
                 self.logger.debug("About to change PP: %s" % url)
+                ###### TESTING Begin
                 ret = requests.put(url, auth=self.auth, 
-                    data=data, cookies=self.cookies)
+                    data=data)
+                #ret = requests.put(url, auth=self.auth, 
+                #    data=data, cookies=self.cookies)
+                ###### TESTING end
                 if ret.status_code != 201:
-                    self.logger.debug(ret.text)
-                    self.logger.debug(data)
                     raise ProcessorError(
                         "Patch policy update failed with code: %s"
                         % ret.status_code
@@ -291,6 +339,8 @@ class PatchManager(Processor):
                 pol_id = ET.fromstring(ret.text).findtext("id")
                 self.logger.debug("patch() returning pol_id %s", pol_id)
                 return pol_id
+            else:
+                self.logger.debug("Patch Management test policy missing" )
         raise ProcessorError("Test patch policy missing")
 
     def main(self):
@@ -302,14 +352,35 @@ class PatchManager(Processor):
             del self.env["patch_manager_summary_result"]
         self.logger.debug("About to update package")
         self.pkg.package = self.env.get("package")
+        #--------------- Jacob Additonal Code---------------#
+        self.pkg.referencePolicy = self.env.get("referencePolicy")
+        if self.pkg.referencePolicy == None: 
+            #if referencePolicy is empty or doesn't exist
+            self.logger.debug("An exception occured when looking for referencePolicy element")
+            self.pkg.referencePolicy = "Install Latest {}".format(self.pkg.package)
+        self.logger.debug(f"Our referencePolicy is: {self.pkg.referencePolicy}")
+        #--------------- End of Jacob Additional Code ------------#
+        #--------------- James Additonal Code---------------#
+        self.pkg.distributionMethod = self.env.get("distributionMethod")
+        if self.pkg.distributionMethod == None: 
+            #if distributionMethod is not set then use Self Service
+            self.logger.debug("no distribution method is set in recipe so using Self Service")
+            self.pkg.distributionMethod = "selfservice"
+        self.logger.debug(f"Our Distribution Method is: {self.pkg.distributionMethod}")
+        #--------------- End of James Additional Code ------------#
         self.pkg.patch = self.env.get("patch")
         if not self.pkg.patch:
             self.pkg.patch = self.pkg.package
+            self.logger.debug("self.pkg.patch was empty, now is %s" % self.pkg.patch)
         self.pkg.version = self.policy()
         pol_id = self.patch()
+        #--------------- Trying to fix Chrome universal ------------#
+        self.logger.debug("Looking for PST policy pkg %s" % self.pkg.version)
+        self.logger.debug("Looking for PST Policy id %s" % pol_id)
+        #--------------- Trying to fix Chrome universal end ------------#
         if pol_id != 0:
             self.env["patch_manager_summary_result"] = {
-                "summary_text": "These packages were sent to test:",
+                "summary_text": "The following packages were sent to test:",
                 "report_fields": ["patch_id", "package", "version"],
                 "data": {
                     "patch_id": pol_id,

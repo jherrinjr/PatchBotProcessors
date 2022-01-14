@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 import datetime
 import logging.handlers
 import requests
+import json
 
 from autopkglib import Processor, ProcessorError
 
@@ -40,10 +41,16 @@ class Package:
     name = ""  # full name of the package '<package>-<version>.pkg'
     version = ""  # the version of our package
     idn = ""  # id of the package in our JP server
+    distributionMethod = "" # prompt (automatic) or self service
+    delta = 0
+    deadline = 0
 
 
 class Production(Processor):
-    """Moves a package from testing to production"""
+    """Moves a package from testing to production by disabling the test
+    policy, changing the production policy to use the new package, and
+    creating a patch policy
+    """
 
     description = __doc__
 
@@ -51,7 +58,6 @@ class Production(Processor):
         "package": {"required": True, "description": "Package name"},
         "patch": {"required": False, "description": "Patch name"},
         "delta": {"required": False, "description": "Days in test"},
-        "deadline": {"required": False, "description": "Days to deadline"},
     }
 
     output_variables = {
@@ -62,7 +68,7 @@ class Production(Processor):
     pkg = Package()
 
     def load_prefs(self):
-        """load the preferences from file"""
+        """ load the preferences from file """
         # Which pref format to use, autopkg or jss_importer
         autopkg = True
         if autopkg:
@@ -116,25 +122,36 @@ class Production(Processor):
             raise ProcessorError("Test policy key missing: {}".format(name))
         self.logger.debug(f"Got valid policy id: {policy_id}")
         policy = self.policy(str(policy_id))
-        # self.logger.debug(f"back from policy(): {policy}")
-        if policy["general"]["enabled"] is False:
+        self.logger.debug(f"back from policy(): {policy}")
+        if policy["general"]["enabled"] == False:
             self.logger.debug("TEST patch policy disabled")
             return False
         else:
             self.logger.debug(
                 f"['general']['enabled'] :{policy['general']['enabled']}"
             )
-        description = policy["user_interaction"][
-            "self_service_description"
-        ].split()
-        # we may have found a patch policy with no proper description yet
-        if len(description) != 3:
+        #--------------------- Jacob Edit ------------------
+        filePath = "/usr/local/var/log/testTimeDB.json"
+        with open(filePath, 'r', encoding='utf-8') as infile:
+            timeLog = json.load(infile)
+        if self.pkg.package in timeLog:
+            datestr = timeLog[self.pkg.package]
+        else:
+            self.logger.debug(f"Could not find {self.pkg.package} in time logs. PatchManager needs to set up time log.")
             return False
-        title, datestr = description[1:]
+
+        # description = policy["user_interaction"][
+        #     "self_service_description"
+        # ].split()
+        # # we may have found a patch policy with no proper description yet
+        # if len(description) != 3:
+        #     return False
+        # title, datestr = description[1:]
+        #--------------------- Jacob Edit End ------------------
 
         date = datetime.datetime.strptime(datestr, "(%Y-%m-%d)")
         delta = now - date
-        self.logger.debug(f"    Description:{description}")
+        # self.logger.debug(f"    Description:{description}") ##Jacob Commented Out
         self.logger.debug(f"    Datestr    :{datestr}")
         self.logger.debug(f"    Date       :{date}")
         self.logger.debug(f"    Delta      :{delta.days}")
@@ -145,18 +162,27 @@ class Production(Processor):
         return False
 
     def lookup(self):
-        """look up test policy to find package name, id and version"""
+        """look up test policy to find package name, id and version """
         self.logger.debug("Starting")
         url = self.base + "/policies/name/Test-" + self.pkg.package
         pack_base = "package_configuration/packages/package"
         self.logger.debug("About to request %s", url)
-        ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        #######Testing
+        ret = requests.get(url, auth=self.auth)
+        #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        #######Testing
         if ret.status_code != 200:
-            raise ProcessorError(
-                "Test policy download failed: {} : {}".format(
-                    ret.status_code, url
+             #--------------------- Jacob Additional Code ------------------
+            url = self.base + "/policies/name/Install%20Latest%20" + self.pkg.package
+            self.logger.debug("About to request %s", url)
+            ret = requests.get(url, auth=self.auth)
+            if ret.status_code != 200:
+                raise ProcessorError(
+                    "Test policy download failed: {} : {}".format(
+                        ret.status_code, url
+                    )
                 )
-            )
+            #--------------------- Jacob Additional Code End ------------------
         policy = ET.fromstring(ret.text)
         test_id = policy.findtext("general/id")
         self.logger.debug("Got test policy id %s", test_id)
@@ -169,7 +195,10 @@ class Production(Processor):
         url = self.base + "/policies/name/Install " + self.pkg.package
         pack_base = "package_configuration/packages/package"
         self.logger.debug("About to request %s", url)
-        ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        #######Testing
+        ret = requests.get(url, auth=self.auth)
+        #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        #######Testing
         self.logger.debug("After get status: %i", ret.status_code)
         if ret.status_code != 200:
             raise ProcessorError(
@@ -185,9 +214,12 @@ class Production(Processor):
         data = ET.tostring(prod)
         self.logger.debug("Parsed to XML for Install")
         self.logger.debug("About to put install policy %s", url)
-        ret = requests.put(
-            url, auth=self.auth, data=data, cookies=self.cookies
-        )
+        #######Testing
+        # ret = requests.put(
+        #     url, auth=self.auth, data=data, cookies=self.cookies
+        # )
+        ret = requests.put(url, auth=self.auth, data=data)
+        #######Testing
         if ret.status_code != 201:
             raise ProcessorError(
                 "Prod policy upload failed: {} : {}".format(
@@ -199,7 +231,10 @@ class Production(Processor):
         """now we start on the patch definition"""
         # download the list of titles
         url = self.base + "/patchsoftwaretitles"
-        ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        #######Testing
+        ret = requests.get(url, auth=self.auth)
+        #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        #######Testing
         patch_def_software_version = ""
         self.logger.debug("About to request PST list %s", url)
         if ret.status_code != 200:
@@ -223,7 +258,10 @@ class Production(Processor):
         # get patch list for our title
         url = self.base + "/patchsoftwaretitles/id/" + str(pst_id)
         self.logger.debug("About to request PST by ID: %s", url)
-        ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        #######Testing
+        ret = requests.get(url, auth=self.auth)
+        #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        #######Testing
         if ret.status_code != 200:
             raise ProcessorError(
                 "Patch software download failed: {} : {}".format(
@@ -254,9 +292,14 @@ class Production(Processor):
         # update the patch def
         data = ET.tostring(root)
         self.logger.debug("About to put PST: %s", url)
+        #######Testing
         ret = requests.put(
-            url, auth=self.auth, data=data, cookies=self.cookies
+            url, auth=self.auth, data=data
         )
+        # ret = requests.put(
+        #     url, auth=self.auth, data=data, cookies=self.cookies
+        # )
+        #######Testing
         if ret.status_code != 201:
             raise ProcessorError(
                 "Patch definition update failed with code: %s"
@@ -268,7 +311,10 @@ class Production(Processor):
             self.base + "/patchpolicies/softwaretitleconfig/id/" + str(pst_id)
         )
         self.logger.debug("About to request patch list: %s", url)
+        #######Testing
         ret = requests.get(url, auth=self.auth)
+        #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+        #######Testing
         if ret.status_code != 200:
             raise ProcessorError(
                 "Patch policy list download failed: {} : {}".format(
@@ -283,7 +329,10 @@ class Production(Processor):
                 # now grab that policy
                 url = self.base + "/patchpolicies/id/" + str(pol_id)
                 self.logger.debug("About to request Stable PP by ID: %s", url)
-                ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+                #######Testing
+                ret = requests.get(url, auth=self.auth)
+                #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+                #######Testing
                 if ret.status_code != 200:
                     raise ProcessorError(
                         "Patch policy download failed: {} : {}".format(
@@ -292,23 +341,41 @@ class Production(Processor):
                     )
                 # now edit the patch policy
                 root = ET.fromstring(ret.text)
+                # string = ET.tostring(root,encoding="unicode")
+                # self.logger.debug(string)
                 root.find(
                     "general/target_version"
                 ).text = patch_def_software_version
                 root.find("general/release_date").text = ""
-                root.find(
-                    "user_interaction/deadlines/deadline_period"
-                ).text = str(self.pkg.deadline)
+                self.logger.debug("Past release date")
+                root.find("general/distribution_method").text = self.pkg.distributionMethod
+                self.logger.debug("Before Edit")
                 # create a description with date
-                now = datetime.datetime.now().strftime(" (%Y-%m-%d)")
-                root.find("user_interaction/self_service_description").text = (
-                    "Update " + self.pkg.package + now
-                )
+                #--------------------- Start Jacob Edit --------------------
+                if self.pkg.distributionMethod == "selfservice":
+                    root.find(
+                    "user_interaction/deadlines/deadline_period"
+                    ).text = str(self.pkg.deadline)
+                    now = datetime.datetime.now().strftime(" (%Y-%m-%d)")
+                    self.logger.debug("found now %s " % now)
+                    desc = "Update " + self.pkg.package + now
+                    self.logger.debug("built desc %s " % desc)
+                    root.find(
+                        "user_interaction/self_service_description"
+                    ).text = desc
+                    self.logger.debug("user_interaction/self_service_description")
+                #--------------------- End Jacob Edit --------------------
+                self.logger.debug("After Edit")
                 data = ET.tostring(root)
                 self.logger.debug("About to update Stable PP: %s", url)
+                #######Testing
                 ret = requests.put(
-                    url, auth=self.auth, data=data, cookies=self.cookies
+                    url, auth=self.auth, data=data
                 )
+                # ret = requests.put(
+                #     url, auth=self.auth, data=data, cookies=self.cookies
+                # )
+                #######Testing
                 if ret.status_code != 201:
                     raise ProcessorError(
                         "Stable patch update failed with code: %s"
@@ -323,7 +390,10 @@ class Production(Processor):
                     str(pol_id),
                     url,
                 )
-                ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+                #######Testing
+                ret = requests.get(url, auth=self.auth)
+                #ret = requests.get(url, auth=self.auth, cookies=self.cookies)
+                #######Testing
                 if ret.status_code != 200:
                     raise ProcessorError(
                         "Patch policy download failed: {} : {}".format(
@@ -335,9 +405,14 @@ class Production(Processor):
                 root.find("general/enabled").text = "false"
                 data = ET.tostring(root)
                 self.logger.debug("About to update Test PP: %s", url)
+                #######Testing
                 ret = requests.put(
-                    url, auth=self.auth, data=data, cookies=self.cookies
+                    url, auth=self.auth, data=data
                 )
+                # ret = requests.put(
+                #     url, auth=self.auth, data=data, cookies=self.cookies
+                # )
+                #######Testing
                 if ret.status_code != 201:
                     raise ProcessorError(
                         "Test patch update failed with code: %s"
@@ -345,13 +420,38 @@ class Production(Processor):
                     )
 
     def policy_list(self):
-        """get the list of patch policies from JP and
-        turn it into a dictionary"""
+        """ get the list of patch policies from JP and turn it into a dictionary """
 
+        # let's use the cookies to make sure we hit the
+        # same server for every request.
+        # the complication here is that ordinary and Premium Jamfers
+        # get two DIFFERENT cookies for this.
+
+        # the front page will give us the cookies
+
+        #*********** James herrin removed for testing between here TESTING
+        # r = requests.get(self.base)
+        # cookie_value = r.cookies.get("APBALANCEID")
+        # if cookie_value:
+        #     # we are NOT premium Jamf Cloud
+        #     self.cookies = dict(APBALANCEID=cookie_value)
+        #     c_cookie = "APBALANCEID=%s", cookie_value
+        #     self.logger.debug("APBALANCEID found")
+        # else:
+        #     cookie_value = r.cookies["AWSALB"]
+        #     self.cookies = dict(AWSALB=cookie_value)
+        #     c_cookie = "AWSALB=%s", cookie_value
+        #     self.logger.debug("APBALANCEID not found")
+        #******* and here!!
         url = self.base + "/patchpolicies"
+        #######Testing
         ret = requests.get(
-            url, auth=self.auth, headers=self.hdrs, cookies=self.cookies
+            url, auth=self.auth, headers=self.hdrs
         )
+        # ret = requests.get(
+        #     url, auth=self.auth, headers=self.hdrs, cookies=self.cookies
+        # )
+        #######Testing
         self.logger.debug(
             "GET policy list url: %s status: %s" % (url, ret.status_code)
         )
@@ -366,11 +466,16 @@ class Production(Processor):
         return d
 
     def policy(self, idn):
-        """get a single patch policy"""
+        """ get a single patch policy """
         url = self.base + "/patchpolicies/id/" + idn
+        #######Testing
         ret = requests.get(
-            url, auth=self.auth, headers=self.hdrs, cookies=self.cookies
+            url, auth=self.auth, headers=self.hdrs
         )
+        # ret = requests.get(
+        #     url, auth=self.auth, headers=self.hdrs, cookies=self.cookies
+        # )
+        #######Testing
         self.logger.debug(
             "GET policy url: %s status: %s" % (url, ret.status_code)
         )
@@ -392,21 +497,40 @@ class Production(Processor):
         self.pkg.package = self.env.get("package")
         self.pkg.patch = self.env.get("patch")
         self.pkg.delta = self.env.get("delta")
+        #--------------- James Additonal Code---------------#
+        self.pkg.distributionMethod = self.env.get("distributionMethod")
+        if self.pkg.distributionMethod == None: 
+            #if distributionMethod is not set then use Self Service
+            self.logger.debug("no distribution method is set in recipe so using Self Service")
+            self.pkg.distributionMethod = "selfservice"
+        self.logger.debug(f"Our Distribution Method is: {self.pkg.distributionMethod}")
+        #--------------- End of James Additional Code ------------#
+        #--------------- James Additonal Code---------------#
+        self.pkg.distributionMethod = self.env.get("distributionMethod")
+        if self.pkg.distributionMethod == None: 
+            #if distributionMethod is not set then use Self Service
+            self.logger.debug("no distribution method is set in recipe so using Self Service")
+            self.pkg.distributionMethod = "selfservice"
+        self.logger.debug(f"Our Distribution Method is: {self.pkg.distributionMethod}")
+        #--------------- End of James Additional Code ------------#
         if self.pkg.delta:
             self.pkg.delta = int(self.pkg.delta)
         else:
-            self.pkg.delta = DEFAULT_DELTA
-        self.pkg.deadline = self.env.get("deadline")
-        if self.pkg.deadline:
-            self.pkg.deadline = int(self.pkg.deadline)
-        else:
-            self.pkg.deadline = DEFAULT_DEADLINE
+            self.pkg.delta = 0
+        deadline = self.env.get("deadline")
         self.logger.debug(f"Starting package {self.pkg.package}")
         self.logger.debug(f"get. delta: {self.pkg.delta}")
+        if not self.pkg.delta:
+            self.pkg.delta = DEFAULT_DELTA
+        if deadline:
+            self.pkg.deadline = int(deadline)
+            self.logger.debug("Found deadline %i", self.pkg.deadline)
+        else:
+            self.pkg.deadline = DEFAULT_DEADLINE
         if not self.pkg.patch:
             self.pkg.patch = self.pkg.package
-        if self.pkg.patch.lower() == "none":
-            exit(0)
+        if self.pkg.patch.lower() is "none":
+            exit (0)
         if self.check_delta():
             self.logger.debug("Passed delta. Package: %s", self.pkg.package)
             self.lookup()
