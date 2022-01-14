@@ -3,6 +3,16 @@ Part of PatchBot - three AutoPkg custom processors
 
 Details can be found at https://github.com/Honestpuck/PatchBot
 
+This is v3F.1 a fork of v3 with a number of features added from FresnoState made by James Herrin and Jacob Sales. 
+
+Changes can be summarised:
+
+- We made it so that when JSS downloads and updates the policies for new apps those apps are immediately available to all to install with name "Install Latest <appname>". 
+- Therefore we made it so that in the recipe you can choose the format of the name of the dependent General Policy that the PST Policy relies on.
+- We added the ability for PST policies to be deployed as prompt (automatic install) or Self Service.
+- We added the feature for patchbot to read the recipe to determine pst policy distribution method.
+- With the ability to deploy the PST policy as prompt we had to create a testTimeDB.json that tracks how long a version is in testing to control when it goes to Production.
+
 This is v3. It has now been released to production.
 
 Changes can be summarised:
